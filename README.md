@@ -76,6 +76,18 @@ make build-container
 **Run** (reads `.env`, mounts current dir to `/workspace`)
 
 ```bash
+make run-container
+```
+
+and you simple click
+
+```bash
+Container is up at http://localhost:8888
+```
+
+or if you rant do manually
+
+```bash
 docker run -d --name watsonx-env \
   --env-file .env \
   -p 8888:8888 \
