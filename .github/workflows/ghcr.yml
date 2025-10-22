@@ -16,10 +16,8 @@ permissions:
   packages: write
 
 concurrency:
-  # Group by workflow + ref for pushes, but use a unique run ID for releases and dispatches
-  # This ensures pushes to 'master' cancel in-progress 'master' builds
-  # but releases and manual runs are not canceled by subsequent pushes.
-  group: ${{ github.event_name == 'push' ? format('{0}-{1}', github.workflow, github.ref) : format('{0}-{1}', github.workflow, github.run_id) }}
+  # Group by workflow + ref for pushes; use run_id otherwise (avoids ternary '? :')
+  group: ${{ format('{0}-{1}', github.workflow, (github.event_name == 'push' && github.ref) || github.run_id) }}
   cancel-in-progress: true
 
 jobs:
