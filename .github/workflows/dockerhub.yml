@@ -1,0 +1,152 @@
+name: "📦 Publish Docker (Docker Hub)"
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g., v1.2.3 or 1.2.3)"
+        required: true
+  push:
+    branches: [ master ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dockerhub-publish
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: Build & Push (Docker Hub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Normalize version from release tag or manual input (for release builds)
+      - name: Derive release version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            RAW="${GITHUB_REF#refs/tags/}"
+          else
+            RAW="${{ github.event.inputs.version }}"
+          fi
+          if [ -z "$RAW" ]; then
+            echo "Version not provided (non-release run). Proceeding with branch-only and sha tags.";
+            RELEASE_TAG=""
+            SEMVER=""
+          else
+            if [[ "$RAW" =~ ^v ]]; then
+              RELEASE_TAG="$RAW"
+              SEMVER="${RAW#v}"
+            else
+              RELEASE_TAG="v$RAW"
+              SEMVER="$RAW"
+            fi
+          fi
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
+          echo "SEMVER=$SEMVER" >> $GITHUB_ENV
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
+          echo "Resolved RELEASE_TAG=${RELEASE_TAG}, SEMVER=${SEMVER}, SHORT_SHA=${SHORT_SHA}"
+
+      # Compute image name: docker.io/<your_dockerhub_username>/<repo_name>, all lowercase
+      - name: Compute image name (lowercase)
+        id: img
+        shell: bash
+        run: |
+          USER_RAW="${{ secrets.DOCKERHUB_USERNAME }}"
+          USER_LC="${USER_RAW,,}"
+          REPO_RAW="${GITHUB_REPOSITORY#*/}"
+          REPO_LC="${REPO_RAW,,}"
+          IMAGE="docker.io/${USER_LC}/${REPO_LC}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "Image: $IMAGE"
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            # stable semver tags (only when we have SEMVER)
+            type=raw,value=v${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{version}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{major}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            # short sha tag (always)
+            type=raw,value=sha-${{ env.SHORT_SHA }}
+            # master branch tag (on master pushes)
+            type=raw,value=master,enable=${{ github.ref_name == 'master' }}
+            # latest only on release
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.description=Simple Python 3.11 + Jupyter + watsonx.ai container
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.SEMVER }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+
+      # Build & push using the repo Dockerfile
+      - name: Build & push (Docker Hub)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_VERSION=${{ env.SEMVER }}
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+
+      # Quick sanity checks inside the built image
+      - name: Sanity check — Python and Jupyter present
+        shell: bash
+        run: |
+          REF="$(echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | head -n1)"
+          set -euo pipefail
+          docker run --rm "$REF" python --version
+          docker run --rm "$REF" jupyter --version
+
+      - name: Inspect multi-arch manifest (release tag)
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${SEMVER}" ]; then
+            echo "Inspecting v${SEMVER}…"
+            docker buildx imagetools inspect "${IMAGE}:v${SEMVER}"
+          fi
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "Inspecting latest…"
+            docker buildx imagetools inspect "${IMAGE}:latest"
+          fi

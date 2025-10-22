@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-watsonx-environment"
+version = "0.1.0"
+description = "Minimal, reproducible Jupyter (Python 3.11) environment with IBM watsonx.ai client."
+requires-python = ">=3.11,<3.12"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ruslan Magana Vsevolodovna" }]
+dependencies = [
+  "notebook>=7.2",
+  "ipykernel>=6.29",
+  "python-dotenv>=1.1.1",
+  "ibm-watsonx-ai>=1.1.0",
+  "langchain-ibm>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6",
+  "pytest>=8.2",
+]
+
+[tool.setuptools]
+packages = []

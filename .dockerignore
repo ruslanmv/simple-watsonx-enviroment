@@ -1,0 +1,47 @@
+# --- Secrets ---
+# Per your request, ignore the .env file to keep secrets out of the image
+.env
+*.env
+.env.*
+
+# --- Python Virtual Environment ---
+# Never copy the local virtual environment into the container
+.venv/
+venv/
+*/venv/
+*/.venv/
+
+# --- Python Caches & Artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Build & Distribution ---
+build/
+dist/
+*.egg-info/
+wheels/
+
+# --- Tool Caches (from your Makefile) ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS & IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- VCS (Git) ---
+.git/
+.gitignore
+
+# --- Other ---
+*.log
+Makefile
+README.md

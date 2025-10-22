@@ -1,0 +1,160 @@
+name: "📦 Publish Docker (GHCR)"
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g., v1.2.3 or 1.2.3)"
+        required: true
+  push:
+    branches: [ master ]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ghcr-publish
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    name: Build & Push (GHCR)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Build info (version for releases; sha always)
+      - name: Derive build info
+        id: buildinfo
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            RAW="${GITHUB_REF#refs/tags/}"
+            if [[ "$RAW" =~ ^v ]]; then
+              RELEASE_TAG="$RAW"
+              SEMVER="${RAW#v}"
+            else
+              RELEASE_TAG="v$RAW"
+              SEMVER="$RAW"
+            fi
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RAW="${{ github.event.inputs.version }}"
+            if [ -z "$RAW" ]; then
+              echo "Version not provided."; exit 1
+            fi
+            if [[ "$RAW" =~ ^v ]]; then
+              RELEASE_TAG="$RAW"
+              SEMVER="${RAW#v}"
+            else
+              RELEASE_TAG="v$RAW"
+              SEMVER="$RAW"
+            fi
+          else
+            RELEASE_TAG=""
+            SEMVER=""
+          fi
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          BRANCH="${GITHUB_REF_NAME}"
+          VARIANT="master"
+          {
+            echo "RELEASE_TAG=$RELEASE_TAG"
+            echo "SEMVER=$SEMVER"
+            echo "SHORT_SHA=$SHORT_SHA"
+            echo "BUILD_DATE=$BUILD_DATE"
+            echo "BRANCH=$BRANCH"
+            echo "VARIANT=$VARIANT"
+          } >> $GITHUB_ENV
+          echo "Resolved VARIANT=${VARIANT}, BRANCH=${BRANCH}, SEMVER=${SEMVER}, SHORT_SHA=${SHORT_SHA}"
+
+      # Compute image name: ghcr.io/<owner>/<repo>, all lowercase
+      - name: Compute image name (lowercase)
+        id: img
+        shell: bash
+        run: |
+          OWNER_LC="${GITHUB_REPOSITORY_OWNER,,}"
+          REPO_RAW="${GITHUB_REPOSITORY#*/}"
+          REPO_LC="${REPO_RAW,,}"
+          IMAGE="ghcr.io/${OWNER_LC}/${REPO_LC}"
+          echo "IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "Image: $IMAGE"
+
+      - name: Set up QEMU (multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR login
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: |
+            latest=false
+          tags: |
+            # Release-only tags
+            type=raw,value=v${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            # Branch tag
+            type=raw,value=master,enable=${{ github.ref_name == 'master' }}
+            # Always add branch-scoped sha tag
+            type=raw,value=${{ github.ref_name }}-sha-${{ env.SHORT_SHA }}
+            # Generic short sha too
+            type=raw,value=sha-${{ env.SHORT_SHA }}
+          labels: |
+            org.opencontainers.image.title=${{ env.IMAGE }}
+            org.opencontainers.image.description=Simple Python 3.11 + Jupyter + watsonx.ai container
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.SEMVER }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ env.BUILD_DATE }}
+            org.opencontainers.image.ref.name=${{ env.BRANCH }}
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            org.opencontainers.image.variant=${{ env.VARIANT }}
+
+      - name: Build & push (GHCR)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_VERSION=${{ env.SEMVER }}
+            BUILD_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+
+      - name: Sanity check — Python present
+        shell: bash
+        run: |
+          REF="$(echo "${{ steps.meta.outputs.tags }}" | head -n1)"
+          set -euo pipefail
+          docker run --rm "$REF" python --version
+
+      - name: Inspect multi-arch manifest (main tag)
+        if: always()
+        shell: bash
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:master"
