@@ -16,7 +16,10 @@ permissions:
   packages: write
 
 concurrency:
-  group: ghcr-publish
+  # Group by workflow + ref for pushes, but use a unique run ID for releases and dispatches
+  # This ensures pushes to 'master' cancel in-progress 'master' builds
+  # but releases and manual runs are not canceled by subsequent pushes.
+  group: ${{ github.event_name == 'push' ? format('{0}-{1}', github.workflow, github.ref) : format('{0}-{1}', github.workflow, github.run_id) }}
   cancel-in-progress: true
 
 jobs:
@@ -42,6 +45,8 @@ jobs:
               RELEASE_TAG="v$RAW"
               SEMVER="$RAW"
             fi
+            BRANCH="${GITHUB_REF_NAME}" # This will be the tag, e.g. v1.0.0
+            VARIANT="release"
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             RAW="${{ github.event.inputs.version }}"
             if [ -z "$RAW" ]; then
@@ -54,14 +59,18 @@ jobs:
               RELEASE_TAG="v$RAW"
               SEMVER="$RAW"
             fi
-          else
+            BRANCH="${GITHUB_REF_NAME}" # This is the branch it's run on
+            VARIANT="manual"
+          else # This is a push
             RELEASE_TAG=""
             SEMVER=""
+            BRANCH="${GITHUB_REF_NAME}" # e.g., master
+            VARIANT="${GITHUB_REF_NAME}" # e.g., master
           fi
+
           SHORT_SHA="${GITHUB_SHA::7}"
           BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          BRANCH="${GITHUB_REF_NAME}"
-          VARIANT="master"
+
           {
             echo "RELEASE_TAG=$RELEASE_TAG"
             echo "SEMVER=$SEMVER"
@@ -105,11 +114,11 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            # Release-only tags
-            type=raw,value=v${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{version}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
-            type=semver,pattern={{major}},value=${{ env.SEMVER }},enable=${{ github.event_name == 'release' }}
+            # Release-only tags (check for non-empty SEMVER)
+            type=raw,value=v${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{version}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
+            type=semver,pattern={{major}},value=${{ env.SEMVER }},enable=${{ env.SEMVER != '' }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             # Branch tag
             type=raw,value=master,enable=${{ github.ref_name == 'master' }}
@@ -154,7 +163,9 @@ jobs:
           docker run --rm "$REF" python --version
 
       - name: Inspect multi-arch manifest (main tag)
-        if: always()
+        if: always() && github.ref_name == 'master' # Only run this if we are on master
         shell: bash
         run: |
+          # This step might still fail if the build above was CANCELED
+          # but it shouldn't fail if the build COMPLETED
           docker buildx imagetools inspect "${IMAGE}:master"
